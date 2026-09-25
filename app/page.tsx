@@ -78,7 +78,7 @@ export default function Home() {
     try {
       const c = await post<CheckRes>("/api/check", { po: read.po, vendorId: vendorId && vendorId !== NEW ? vendorId : null });
       setCheck(c);
-      setNames(Object.fromEntries(c.skus.filter((s) => s.status !== "exists").map((s) => [s.sku, s.proposedName || s.shortName])));
+      setNames(Object.fromEntries(c.skus.filter((s) => s.status !== "exists").map((s) => [s.sku, s.proposedName || s.fullName])));
       setStage("check");
     } catch (x) { setErr((x as Error).message); } finally { setBusy(false); }
   }
@@ -107,7 +107,7 @@ export default function Home() {
       const ids: Record<string, string> = Object.fromEntries(check.skus.filter((s) => s.itemId).map((s) => [s.sku.toUpperCase(), s.itemId!]));
       const failed: string[] = [];
       for (let k = 0; k < toCreate.length; k += 8) {
-        const batch = toCreate.slice(k, k + 8).map((s) => ({ sku: s.sku, name: names[s.sku] || s.shortName }));
+        const batch = toCreate.slice(k, k + 8).map((s) => ({ sku: s.sku, name: names[s.sku] || s.fullName }));
         const r = await post<{ results: { sku: string; id?: string; error?: string }[] }>("/api/fill/items", { items: batch, asOf: check.asOf });
         for (const x of r.results) x.id ? (ids[x.sku.toUpperCase()] = x.id) : failed.push(`${x.sku}: ${x.error}`);
         upd(1, { state: "run", label: `New products (${Math.min(k + 8, toCreate.length)} of ${toCreate.length})` });
@@ -275,7 +275,7 @@ export default function Home() {
                             {stage === "check" ? (
                               <input value={names[s.sku] ?? ""} onChange={(e) => setNames({ ...names, [s.sku]: e.target.value })} />
                             ) : names[s.sku]}
-                            {s.nameChanged && stage === "check" && <small className="warn-text">“{s.shortName}” is already used — changed</small>}
+                            {s.nameChanged && stage === "check" && <small className="warn-text">This name is already used by another product — SKU added</small>}
                           </td>
                         </tr>
                       ))}
