@@ -46,19 +46,16 @@ export function checkSkus(lines: PoLine[], items: Item[]): SkuResult[] {
       seen.set(k, { sku: l.sku, shortName: l.shortName, fullName: l.fullName, status: "exists", itemId: found.id, existingName: found.name });
       continue;
     }
-    // New product: prefer the short name ("Gun Metal Z"); if taken, add size, then brand, then full name.
-    const parts = l.fullName.split("|").map((p) => p.trim()).filter(Boolean);
-    const size = parts.length > 1 ? parts[parts.length - 1] : "";
-    const brand = parts.length > 2 ? parts[1] : "";
-    const candidates = [l.shortName, `${l.shortName} ${size}`, `${l.shortName} ${brand} ${size}`, l.fullName, `${l.shortName} ${l.sku}`]
-      .map(cleanName)
-      .filter(Boolean);
-    const name = candidates.find((c) => !taken.has(c.toLowerCase())) || cleanName(`${l.shortName} ${l.sku}`);
+    // New product: use the full name ("Gun Metal Z | Fidel's | Flower | 7g"), like existing QuickBooks items.
+    // If that exact name is already used by another product, add the SKU so it stays unique.
+    const base = cleanName(l.fullName || l.shortName);
+    const candidates = [base, cleanName(`${base} - ${l.sku}`)];
+    const name = candidates.find((c) => !taken.has(c.toLowerCase())) || cleanName(`${base} - ${l.sku} - 2`);
     taken.add(name.toLowerCase());
     seen.set(k, {
       sku: l.sku, shortName: l.shortName, fullName: l.fullName,
       status: l.markedNew ? "new" : "flag",
-      proposedName: name, nameChanged: name !== cleanName(l.shortName),
+      proposedName: name, nameChanged: name !== base,
     });
   }
   return [...seen.values()];
