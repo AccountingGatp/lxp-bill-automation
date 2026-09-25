@@ -21,29 +21,43 @@ export function matchVendor(fileVendor: string, vendors: Vendor[]) {
 // QuickBooks product names: max 100 chars, no ":" (it means sub-item).
 export const cleanName = (s: string) => s.replace(/:/g, "-").replace(/\s+/g, " ").trim().slice(0, 100);
 
+import { normSku } from "./sku";
+export { normSku };
+
 export type SkuResult = {
   sku: string;
   shortName: string;
   fullName: string;
-  status: "exists" | "new" | "flag"; // flag = file says "No" but not found in QuickBooks
+  // exists = use it · new/flag = will be created (flag: file said "No") · inactive = blocked, must be reactivated in QuickBooks
+  status: "exists" | "new" | "flag" | "inactive";
   itemId?: string;
   existingName?: string;
-  proposedName?: string; // for new ones
-  nameChanged?: boolean; // short name already taken -> we suggest another
+  dupInQb?: number; // how many QuickBooks products already share this SKU (>1 = existing duplicate)
+  existingType?: string; // QuickBooks type of the matched product (Inventory, NonInventory, Service)
+  proposedName?: string;
+  nameChanged?: boolean;
 };
 
 export function checkSkus(lines: PoLine[], items: Item[]): SkuResult[] {
-  const bySku = new Map<string, Item>();
-  for (const i of items) if (i.sku) bySku.set(i.sku.trim().toUpperCase(), i);
+  // Group ALL QuickBooks products (active + inactive) by SKU.
+  const bySku = new Map<string, Item[]>();
+  for (const i of items) {
+    if (!i.sku) continue;
+    const k = normSku(i.sku);
+    bySku.set(k, [...(bySku.get(k) || []), i]);
+  }
   const taken = new Set(items.map((i) => i.name.toLowerCase()));
   const seen = new Map<string, SkuResult>();
 
   for (const l of lines) {
-    const k = l.sku.toUpperCase();
+    const k = normSku(l.sku);
     if (seen.has(k)) continue;
     const found = bySku.get(k);
-    if (found) {
-      seen.set(k, { sku: l.sku, shortName: l.shortName, fullName: l.fullName, status: "exists", itemId: found.id, existingName: found.name });
+    if (found?.length) {
+      const active = found.filter((i) => i.active).sort((a, b) => Number(a.id) - Number(b.id));
+      const base = { sku: l.sku, shortName: l.shortName, fullName: l.fullName, dupInQb: found.length };
+      if (active.length) seen.set(k, { ...base, status: "exists", itemId: active[0].id, existingName: active[0].name, existingType: active[0].type });
+      else seen.set(k, { ...base, status: "inactive", existingName: found[0].name });
       continue;
     }
     // New product: use the full name ("Gun Metal Z | Fidel's | Flower | 7g"), like existing QuickBooks items.

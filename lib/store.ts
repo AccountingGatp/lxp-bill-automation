@@ -13,7 +13,7 @@ async function redis(cmd: (string | number)[]) {
   const r = await fetch(URL_!, {
     method: "POST",
     headers: { Authorization: `Bearer ${TOKEN}`, "Content-Type": "application/json" },
-    body: JSON.stringify(cmd),
+    body: JSON.stringify(cmd.map(String)),
     cache: "no-store",
   });
   if (!r.ok) throw new Error(`Storage error ${r.status}`);
@@ -49,6 +49,17 @@ export async function kvSet(key: string, value: unknown) {
   data[key] = raw;
   await fs.mkdir(path.dirname(FILE), { recursive: true });
   await fs.writeFile(FILE, JSON.stringify(data, null, 1));
+}
+
+/** Lock a key for `seconds` (Redis SET NX EX). Returns false if someone else holds it. */
+export async function kvLock(key: string, seconds = 120): Promise<boolean> {
+  checkConfigured();
+  if (URL_) return (await redis(["SET", key, "1", "NX", "EX", seconds])) === "OK";
+  const data = await readFile();
+  const until = Number(data[key] ? JSON.parse(data[key]) : 0);
+  if (until > Date.now()) return false;
+  await kvSet(key, Date.now() + seconds * 1000);
+  return true;
 }
 
 export async function kvDel(key: string) {

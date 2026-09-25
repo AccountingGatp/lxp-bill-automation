@@ -23,7 +23,7 @@ type Conn = {
 
 export type Vendor = { id: string; name: string };
 export type Store = { id: string; name: string };
-export type Item = { id: string; name: string; sku: string; type: string };
+export type Item = { id: string; name: string; sku: string; type: string; active: boolean };
 export type Accounts = { income: string; expense: string; asset: string };
 
 // ---------------------------------------------------------------- OAuth
@@ -153,10 +153,12 @@ async function mdb(): Promise<MockDb> {
       { id: "3", name: "Coldfire Extracts" }, { id: "4", name: "Gas No Brakes" },
     ],
     items: [
-      { id: "101", name: "Tzunami", sku: "FID-FLWR-TNM-7G", type: "Inventory" },
-      { id: "102", name: "Grape Sunshine", sku: "DBXHSN-6SWH-GSS-1G", type: "Inventory" },
-      { id: "103", name: "Lemon Cooler", sku: "SRGXHSN-6SWH-LMNC-1G", type: "Inventory" },
-      { id: "104", name: "Mangosteen", sku: "OTHER-MANGOST-14G", type: "Inventory" },
+      { id: "101", name: "Tzunami", sku: "FID-FLWR-TNM-7G", type: "Inventory", active: true },
+      { id: "102", name: "Grape Sunshine", sku: "DBXHSN-6SWH-GSS-1G", type: "Inventory", active: true },
+      { id: "103", name: "Lemon Cooler", sku: "SRGXHSN-6SWH-LMNC-1G", type: "Inventory", active: true },
+      { id: "104", name: "Mangosteen", sku: "OTHER-MANGOST-14G", type: "Inventory", active: true },
+      { id: "105", name: "Bomb Pop | Fidel's | Flower | 7g (old)", sku: "FID-FLWR-BMBP-7G", type: "Inventory", active: false },
+      { id: "106", name: "Sample Service", sku: "SVC-001", type: "Service", active: true },
     ],
     stores: [{ id: "1", name: "Clubhouse" }, { id: "2", name: "Main Warehouse" }],
     bills: [], n: 1000,
@@ -171,6 +173,14 @@ export async function listVendors(): Promise<Vendor[]> {
   return (await queryAll("Vendor", "where Active = true")).map((v) => ({ id: v.Id, name: v.DisplayName }));
 }
 
+/** Vendor with this exact name (any status), to avoid "Duplicate Name" errors. */
+export async function findVendorByName(name: string): Promise<(Vendor & { active: boolean }) | null> {
+  if (MOCK) { const v = (await mdb()).vendors.find((x) => x.name.toLowerCase() === name.toLowerCase()); return v ? { ...v, active: true } : null; }
+  const rows = await queryAll("Vendor", `where DisplayName = '${esc(name)}' and Active IN (true, false)`);
+  const v = rows[0];
+  return v ? { id: v.Id, name: v.DisplayName, active: v.Active !== false } : null;
+}
+
 export async function createVendor(name: string): Promise<Vendor> {
   if (MOCK) {
     const db = await mdb();
@@ -179,8 +189,15 @@ export async function createVendor(name: string): Promise<Vendor> {
     await kvSet("mock:db", db);
     return v;
   }
-  const j = await api("vendor", { DisplayName: name.replace(/:/g, "-").slice(0, 500) });
-  return { id: j.Vendor.Id, name: j.Vendor.DisplayName };
+  try {
+    const j = await api("vendor", { DisplayName: name.replace(/:/g, "-").slice(0, 500) });
+    return { id: j.Vendor.Id, name: j.Vendor.DisplayName };
+  } catch (e) {
+    const m = e instanceof Error ? e.message : String(e);
+    if (/duplicate name/i.test(m))
+      throw new Error(`The name “${name}” is already used in QuickBooks (maybe by a customer, employee or inactive vendor). Pick the vendor from the list instead, or use a slightly different name.`);
+    throw e;
+  }
 }
 
 export async function listStores(): Promise<Store[]> {
@@ -195,7 +212,10 @@ export async function listStores(): Promise<Store[]> {
 
 export async function listItems(): Promise<Item[]> {
   if (MOCK) return (await mdb()).items;
-  return (await queryAll("Item")).map((i) => ({ id: i.Id, name: i.Name, sku: i.Sku || "", type: i.Type }));
+  // QuickBooks hides inactive products unless asked: include them, so an old inactive SKU is never created again.
+  return (await queryAll("Item", "where Active IN (true, false)")).map((i) => ({
+    id: i.Id, name: i.Name, sku: i.Sku || "", type: i.Type, active: i.Active !== false,
+  }));
 }
 
 export async function billExists(docNumber: string, vendorId?: string): Promise<boolean> {
@@ -236,7 +256,7 @@ export async function createItem(p: { name: string; sku: string; asOf: string; a
     const db = await mdb();
     if (db.items.some((i) => i.name.toLowerCase() === p.name.toLowerCase()))
       throw new Error(`Duplicate Name Exists Error: The name "${p.name}" is already used.`);
-    const it = { id: String(++db.n), name: p.name, sku: p.sku, type: "Inventory" };
+    const it = { id: String(++db.n), name: p.name, sku: p.sku, type: "Inventory", active: true };
     db.items.push(it);
     await kvSet("mock:db", db);
     return it;
@@ -253,19 +273,19 @@ export async function createItem(p: { name: string; sku: string; asOf: string; a
     ExpenseAccountRef: { value: p.accounts.expense },
     AssetAccountRef: { value: p.accounts.asset },
   });
-  return { id: j.Item.Id, name: j.Item.Name, sku: j.Item.Sku || "", type: j.Item.Type };
+  return { id: j.Item.Id, name: j.Item.Name, sku: j.Item.Sku || "", type: j.Item.Type, active: true };
 }
 
 export type BillLine = { itemId: string; qty: number; amount: number; description: string };
 export async function createBill(p: {
   vendorId: string; date: string; docNumber: string; storeId?: string; lines: BillLine[];
-}): Promise<{ id: string; url: string }> {
+}): Promise<{ id: string; url: string; total: number }> {
   if (MOCK) {
     const db = await mdb();
     const id = String(++db.n);
     db.bills.push({ id, docNumber: p.docNumber });
     await kvSet("mock:db", db);
-    return { id, url: "" };
+    return { id, url: "", total: Math.round(p.lines.reduce((s, l) => s + l.amount, 0) * 100) / 100 };
   }
   const j = await api("bill", {
     VendorRef: { value: p.vendorId },
@@ -284,5 +304,5 @@ export async function createBill(p: {
       },
     })),
   });
-  return { id: j.Bill.Id, url: `${APP_BASE}/app/bill?txnId=${j.Bill.Id}` };
+  return { id: j.Bill.Id, url: `${APP_BASE}/app/bill?txnId=${j.Bill.Id}`, total: Number(j.Bill.TotalAmt) };
 }

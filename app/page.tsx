@@ -1,11 +1,12 @@
 "use client";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { normSku } from "@/lib/sku";
 
 type Line = { row: number; fullName: string; shortName: string; sku: string; qty: number; amount: number; markedNew: boolean };
 type Po = { vendor: string; date: string; billNo: string; invoiceAmount: number | null; lines: Line[]; total: number; problems: string[]; warnings: string[] };
 type Opt = { id: string; name: string };
 type ReadRes = { po: Po; vendor?: { matchedId: string | null; how: string | null; suggestions: Opt[]; all: Opt[] }; stores?: Opt[]; storeId?: string | null };
-type Sku = { sku: string; shortName: string; fullName: string; status: "exists" | "new" | "flag"; itemId?: string; existingName?: string; proposedName?: string; nameChanged?: boolean };
+type Sku = { sku: string; shortName: string; fullName: string; status: "exists" | "new" | "flag" | "inactive"; itemId?: string; existingName?: string; dupInQb?: number; existingType?: string; proposedName?: string; nameChanged?: boolean };
 type CheckRes = { skus: Sku[]; asOf: string; duplicateBill: boolean };
 type Status = { connected: boolean; companyName: string; environment: string };
 type Stage = "upload" | "vendor" | "check" | "fill" | "done";
@@ -39,7 +40,7 @@ export default function Home() {
   const [check, setCheck] = useState<CheckRes | null>(null);
   const [names, setNames] = useState<Record<string, string>>({});
   const [progress, setProgress] = useState<Step[]>([]);
-  const [bill, setBill] = useState<{ id: string; url: string } | null>(null);
+  const [bill, setBill] = useState<{ id: string; url: string; total: number } | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -63,7 +64,7 @@ export default function Home() {
       const r = await call<ReadRes>("/api/read", { method: "POST", body: fd });
       setRead(r);
       if (!r.po.problems.length && r.vendor) {
-        setVendorId(r.vendor.matchedId || (r.vendor.suggestions[0]?.id ?? ""));
+        setVendorId(r.vendor.matchedId || ""); // no match -> user must choose
         setNewVendor(r.po.vendor);
         setStoreId(r.storeId || "");
         setStage("vendor");
@@ -78,7 +79,7 @@ export default function Home() {
     try {
       const c = await post<CheckRes>("/api/check", { po: read.po, vendorId: vendorId && vendorId !== NEW ? vendorId : null });
       setCheck(c);
-      setNames(Object.fromEntries(c.skus.filter((s) => s.status !== "exists").map((s) => [s.sku, s.proposedName || s.fullName])));
+      setNames(Object.fromEntries(c.skus.filter((s) => s.status === "new" || s.status === "flag").map((s) => [s.sku, s.proposedName || s.fullName])));
       setStage("check");
     } catch (x) { setErr((x as Error).message); } finally { setBusy(false); }
   }
@@ -86,7 +87,7 @@ export default function Home() {
   // ---- Step 4: fill QuickBooks
   async function fill() {
     if (!read || !check) return;
-    const toCreate = check.skus.filter((s) => s.status !== "exists");
+    const toCreate = check.skus.filter((s) => s.status === "new" || s.status === "flag");
     const steps: Step[] = [
       { label: vendorId === NEW ? `Create vendor “${newVendor}”` : "Vendor", state: "wait" },
       { label: `New products (0 of ${toCreate.length})`, state: "wait" },
@@ -104,20 +105,20 @@ export default function Home() {
       upd(0, { state: "ok" });
 
       i = 1; upd(1, { state: toCreate.length ? "run" : "ok", note: toCreate.length ? undefined : "none needed" });
-      const ids: Record<string, string> = Object.fromEntries(check.skus.filter((s) => s.itemId).map((s) => [s.sku.toUpperCase(), s.itemId!]));
+      const ids: Record<string, string> = Object.fromEntries(check.skus.filter((s) => s.itemId).map((s) => [normSku(s.sku), s.itemId!]));
       const failed: string[] = [];
       for (let k = 0; k < toCreate.length; k += 8) {
         const batch = toCreate.slice(k, k + 8).map((s) => ({ sku: s.sku, name: names[s.sku] || s.fullName }));
         const r = await post<{ results: { sku: string; id?: string; error?: string }[] }>("/api/fill/items", { items: batch, asOf: check.asOf });
-        for (const x of r.results) x.id ? (ids[x.sku.toUpperCase()] = x.id) : failed.push(`${x.sku}: ${x.error}`);
+        for (const x of r.results) x.id ? (ids[normSku(x.sku)] = x.id) : failed.push(`${x.sku}: ${x.error}`);
         upd(1, { state: "run", label: `New products (${Math.min(k + 8, toCreate.length)} of ${toCreate.length})` });
       }
       if (failed.length) throw new Error("Some products could not be created:\n" + failed.join("\n"));
       if (toCreate.length) upd(1, { state: "ok" });
 
       i = 2; upd(2, { state: "run" });
-      const lines = read.po.lines.map((l) => ({ itemId: ids[l.sku.toUpperCase()], qty: l.qty, amount: l.amount, description: l.fullName }));
-      const b = await post<{ id: string; url: string }>("/api/fill/bill", {
+      const lines = read.po.lines.map((l) => ({ itemId: ids[normSku(l.sku)], qty: l.qty, amount: l.amount, description: l.fullName }));
+      const b = await post<{ id: string; url: string; total: number }>("/api/fill/bill", {
         vendorId: v.vendorId, date: read.po.date, billNo: read.po.billNo, storeId, lines,
       });
       upd(2, { state: "ok" });
@@ -136,13 +137,13 @@ export default function Home() {
 
   const counts = useMemo(() => {
     const s = check?.skus || [];
-    return { exists: s.filter((x) => x.status === "exists").length, new: s.filter((x) => x.status === "new").length, flag: s.filter((x) => x.status === "flag").length };
+    return { exists: s.filter((x) => x.status === "exists").length, new: s.filter((x) => x.status === "new").length, flag: s.filter((x) => x.status === "flag").length, inactive: s.filter((x) => x.status === "inactive") };
   }, [check]);
 
   const po = read?.po;
   const locked = stage === "fill" || stage === "done";
   const vendorName = vendorId === NEW ? newVendor : read?.vendor?.all.find((v) => v.id === vendorId)?.name;
-  const blockFill = !!check?.duplicateBill || Object.values(names).some((n) => !n.trim());
+  const blockFill = !!check?.duplicateBill || counts.inactive.length > 0 || Object.values(names).some((n) => !n.trim());
 
   return (
     <main>
@@ -202,7 +203,7 @@ export default function Home() {
                     {read.vendor.matchedId && vendorId === read.vendor.matchedId && (
                       <div className="ok-text">✓ Matched{read.vendor.how === "saved" ? " (saved from last time)" : ""}</div>
                     )}
-                    {!read.vendor.matchedId && <div className="warn-text">Not found — pick the vendor or add new</div>}
+                    {!read.vendor.matchedId && <div className="warn-text">Not found in QuickBooks — choose the right vendor, or “+ Add as new vendor”</div>}
                     <select value={vendorId} onChange={(e) => setVendorId(e.target.value)} disabled={stage !== "vendor"}>
                       <option value="">— Select vendor —</option>
                       <option value={NEW}>+ Add as new vendor</option>
@@ -249,7 +250,7 @@ export default function Home() {
                 <div><span>Bill no.</span><strong>{po.billNo}</strong></div>
                 <div><span>Date</span><strong>{usDate(po.date)}</strong></div>
                 <div><span>Items</span><strong>{po.lines.length}</strong></div>
-                <div><span>Total</span><strong>{money(po.total)}</strong>{po.invoiceAmount != null && <small className="ok-text">✓ matches file</small>}</div>
+                <div><span>Total</span><strong>{money(po.total)}</strong>{po.invoiceAmount != null && Math.abs(po.invoiceAmount - po.total) < 0.01 && <small className="ok-text">✓ matches file</small>}</div>
               </div>
 
               {check.duplicateBill && <div className="alert">Bill <b>{po.billNo}</b> is already in QuickBooks. It will not be added again.</div>}
@@ -262,13 +263,34 @@ export default function Home() {
                 {counts.flag > 0 && <span className="warn-text">⚠ {counts.flag} marked “No” but not found</span>}
               </div>
 
+              {counts.inactive.length > 0 && (
+                <div className="alert">
+                  <b>Stopped: {counts.inactive.length === 1 ? "this SKU belongs" : "these SKUs belong"} to an INACTIVE product in QuickBooks.</b>
+                  <ul>{counts.inactive.map((s) => <li key={s.sku}><b>{s.sku}</b> — {s.existingName}</li>)}</ul>
+                  Nothing was created, so no duplicate SKU. To continue:
+                  <ol>
+                    <li>In QuickBooks, open <b>⚙ → Products and services</b>.</li>
+                    <li>Click the filter and set <b>Status: Inactive</b>.</li>
+                    <li>Find the product above → click <b>Make active</b>.</li>
+                    <li>Come back here and click <b>Check again</b>.</li>
+                  </ol>
+                  <button className="btn" disabled={busy} onClick={runCheck}>{busy ? "Checking…" : "Check again"}</button>
+                </div>
+              )}
+              {check.skus.filter((s) => s.status === "exists" && s.existingType && s.existingType !== "Inventory").map((s) => (
+                <div key={"t" + s.sku} className="note">SKU <b>{s.sku}</b> matches “{s.existingName}”, which is a <b>{s.existingType}</b> product (not Inventory) in QuickBooks. Please check it.</div>
+              ))}
+              {check.skus.filter((s) => (s.dupInQb || 0) > 1).map((s) => (
+                <div key={"d" + s.sku} className="note">SKU <b>{s.sku}</b> is already used by {s.dupInQb} products in QuickBooks. The bill will use “{s.existingName}”. Please clean up the duplicate in QuickBooks.</div>
+              ))}
+
               {counts.new + counts.flag > 0 && (
                 <>
                   <p className="muted small">These will be created with quantity 0, as-of date <b>{usDate(check.asOf)}</b>, non-taxable.</p>
                   <table>
                     <thead><tr><th>SKU</th><th>Product name in QuickBooks</th></tr></thead>
                     <tbody>
-                      {check.skus.filter((s) => s.status !== "exists").map((s) => (
+                      {check.skus.filter((s) => s.status === "new" || s.status === "flag").map((s) => (
                         <tr key={s.sku} className={s.status === "flag" ? "flag" : ""}>
                           <td className="mono">{s.status === "flag" && "⚠ "}{s.sku}</td>
                           <td>
@@ -303,7 +325,10 @@ export default function Home() {
               </ul>
               {stage === "done" && bill && (
                 <div className="done">
-                  <strong>✓ Bill {po?.billNo} created — {money(po?.total || 0)}</strong>
+                  <strong>✓ Bill {po?.billNo} created — {money(bill.total)}</strong>
+                  {po && Math.abs(bill.total - po.total) >= 0.01 && (
+                    <div className="alert">Check this bill: QuickBooks total {money(bill.total)} is different from the file total {money(po.total)}.</div>
+                  )}
                   <div className="row">
                     {bill.url && <a className="btn" href={bill.url} target="_blank" rel="noreferrer">Open bill in QuickBooks</a>}
                     <button className="btn ghost" onClick={reset}>Import another file</button>
@@ -313,6 +338,7 @@ export default function Home() {
               {stage === "fill" && !busy && (
                 <div className="row">
                   <button className="btn" onClick={fill}>Try again</button>
+                  <button className="btn ghost" onClick={() => { setErr(null); setProgress([]); runCheck(); }}>Back to check (edit names)</button>
                   <button className="btn ghost" onClick={reset}>Start over</button>
                 </div>
               )}

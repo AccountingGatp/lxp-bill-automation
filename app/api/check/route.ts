@@ -7,7 +7,7 @@ export const dynamic = "force-dynamic";
 
 export const POST = handler(async (req: Request) => {
   const { po, vendorId } = (await req.json()) as { po: Po; vendorId: string | null };
-  const [items, dup] = await Promise.all([listItems(), billExists(po.billNo, vendorId || undefined)]);
+  const [items, dup] = await Promise.all([listItems(), vendorId ? billExists(po.billNo, vendorId) : Promise.resolve(false)]);
   return {
     skus: checkSkus(po.lines, items),
     asOf: asOfDate(po.date),

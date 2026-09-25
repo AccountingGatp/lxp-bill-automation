@@ -6,7 +6,7 @@ export default function Login() {
   async function go(e: React.FormEvent) {
     e.preventDefault(); setErr("");
     const r = await fetch("/api/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ password: pw }) });
-    const j = await r.json();
+    const j = await r.json().catch(() => ({ error: `Server error ${r.status}. Check the settings in Vercel and Redeploy.` }));
     if (r.ok) location.href = "/"; else setErr(j.error || "Login failed");
   }
   return (

@@ -2,6 +2,7 @@
 // Columns are found by their HEADER TEXT, not by letter, because the sheets differ
 // (e.g. "New Item" is column M in one file and column L in another).
 import * as XLSX from "xlsx";
+import { normSku } from "./sku";
 
 export type PoLine = {
   row: number;
@@ -98,12 +99,18 @@ export function parsePo(buf: ArrayBuffer): Po {
 
   const lines: PoLine[] = [];
   let skipped = 0;
+  let skippedAmount = 0;
   if (!problems.length) {
     for (let r = headerRow + 1; r < rows.length; r++) {
       const row = rows[r] || [];
       const sku = String(row[col.sku] ?? "").trim();
       if (!sku || PLACEHOLDER.test(sku)) continue;
-      if (norm(row[col.status]) !== "approved") { skipped++; continue; }
+      if (norm(row[col.status]) !== "approved") {
+        skipped++;
+        const a = toNum(row[col.amount]);
+        if (a != null) skippedAmount += a;
+        continue;
+      }
       const fullName = String(row[col.name] ?? "").trim();
       const strain = col.strain >= 0 ? String(row[col.strain] ?? "").trim() : "";
       const shortName = strain || fullName.split("|")[0].trim();
@@ -121,10 +128,14 @@ export function parsePo(buf: ArrayBuffer): Po {
   }
 
   const total = round2(lines.reduce((s, l) => s + l.amount, 0));
-  if (invoiceAmount != null && Math.abs(total - invoiceAmount) > 0.009)
-    problems.push(`Line total $${total.toFixed(2)} does not match Invoice Amount $${invoiceAmount.toFixed(2)}.`);
-  if (skipped) warnings.push(`${skipped} line(s) are not “Approved” and will be skipped.`);
-  const dup = lines.map((l) => l.sku.toUpperCase()).filter((s, i, a) => a.indexOf(s) !== i);
+  const allTotal = round2(total + skippedAmount);
+  const near = (a: number, b: number) => Math.abs(a - b) < 0.01;
+  if (lines.length && invoiceAmount != null && !near(total, invoiceAmount)) {
+    if (skipped && near(allTotal, invoiceAmount))
+      warnings.push(`Invoice Amount $${invoiceAmount.toFixed(2)} includes ${skipped} line(s) that are not “Approved”. The bill will only have the approved lines: $${total.toFixed(2)}.`);
+    else problems.push(`Line total $${total.toFixed(2)} does not match Invoice Amount $${invoiceAmount.toFixed(2)}.`);
+  } else if (skipped) warnings.push(`${skipped} line(s) are not “Approved” and will be skipped.`);
+  const dup = lines.map((l) => normSku(l.sku)).filter((s, i, a) => a.indexOf(s) !== i);
   if (dup.length) warnings.push(`Same SKU appears more than once: ${[...new Set(dup)].join(", ")}.`);
 
   return { vendor, date: date || "", billNo, invoiceAmount, lines, total, skippedNotApproved: skipped, problems, warnings };

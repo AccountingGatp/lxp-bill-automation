@@ -51,7 +51,8 @@ td input { padding: 5px 8px; }
 tr.flag td { background: #fff8eb; }
 .mono { font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; white-space: nowrap; padding-top: 11px; }
 .alert { background: #fdecea; color: var(--bad); border-radius: 8px; padding: 10px 14px; margin: 10px 0; white-space: pre-line; font-size: 14px; }
-.alert ul { margin: 6px 0 0; padding-left: 18px; }
+.alert ul, .alert ol { margin: 6px 0; padding-left: 20px; }
+.alert .btn { margin-top: 6px; }
 .note { background: #fff8eb; color: var(--warn); border-radius: 8px; padding: 8px 12px; margin: 10px 0 0; font-size: 13px; }
 .steps { list-style: none; padding: 0; margin: 0; }
 .steps li { padding: 6px 0; display: flex; gap: 10px; }
