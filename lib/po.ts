@@ -86,7 +86,7 @@ export function parsePo(buf: ArrayBuffer): Po {
 
   const problems: string[] = [];
   const warnings: string[] = [];
-  for (const k of ["name", "sku", "isNew", "status", "qty", "amount"])
+  for (const k of ["name", "sku", "isNew", "qty", "amount"])
     if (col[k] < 0) problems.push(`Column not found in file: “${COLS[k][0]}”.`);
 
   const vendor = String(top["vendor"] ?? "").trim();
@@ -96,6 +96,8 @@ export function parsePo(buf: ArrayBuffer): Po {
   if (!vendor) problems.push("Vendor name is empty (cell next to “Vendor:”).");
   if (!date) problems.push("Bill date is missing or not a date (cell next to “Date:”).");
   if (!billNo) problems.push("Bill number is empty (cell next to “Ref #:”).");
+  if (invoiceAmount == null)
+    problems.push("Invoice Amount is missing at the top of the file (cell next to “Invoice Amount:”). Add it and upload the file again.");
 
   const lines: PoLine[] = [];
   let skipped = 0;
@@ -105,12 +107,6 @@ export function parsePo(buf: ArrayBuffer): Po {
       const row = rows[r] || [];
       const sku = String(row[col.sku] ?? "").trim();
       if (!sku || PLACEHOLDER.test(sku)) continue;
-      if (norm(row[col.status]) !== "approved") {
-        skipped++;
-        const a = toNum(row[col.amount]);
-        if (a != null) skippedAmount += a;
-        continue;
-      }
       const fullName = String(row[col.name] ?? "").trim();
       const strain = col.strain >= 0 ? String(row[col.strain] ?? "").trim() : "";
       const shortName = strain || fullName.split("|")[0].trim();
@@ -120,21 +116,22 @@ export function parsePo(buf: ArrayBuffer): Po {
       if (amount == null && qty != null && rate != null) amount = qty * rate;
       const excelRow = r + 1;
       if (!qty || qty <= 0) { problems.push(`Row ${excelRow} (${sku}): quantity is empty or zero.`); continue; }
-      if (amount == null) { problems.push(`Row ${excelRow} (${sku}): amount is empty.`); continue; }
+      if (amount == null || amount === 0) { warnings.push(`Row ${excelRow} (${sku}) has no cost/amount, so it is not added to the bill.`); continue; }
       if (!shortName) { problems.push(`Row ${excelRow} (${sku}): product name is empty.`); continue; }
       lines.push({ row: excelRow, fullName, shortName, sku, qty, amount: round2(amount), markedNew: norm(row[col.isNew]) === "yes" });
     }
-    if (!lines.length) problems.push("No approved product lines found in this file.");
+    if (!lines.length) problems.push("No product lines found in this file.");
   }
 
   const total = round2(lines.reduce((s, l) => s + l.amount, 0));
-  const allTotal = round2(total + skippedAmount);
-  const near = (a: number, b: number) => Math.abs(a - b) < 0.01;
-  if (lines.length && invoiceAmount != null && !near(total, invoiceAmount)) {
-    if (skipped && near(allTotal, invoiceAmount))
-      warnings.push(`Invoice Amount $${invoiceAmount.toFixed(2)} includes ${skipped} line(s) that are not “Approved”. The bill will only have the approved lines: $${total.toFixed(2)}.`);
-    else problems.push(`Line total $${total.toFixed(2)} does not match Invoice Amount $${invoiceAmount.toFixed(2)}.`);
-  } else if (skipped) warnings.push(`${skipped} line(s) are not “Approved” and will be skipped.`);
+  // Bill is only allowed when the lines add up exactly to the Invoice Amount at the top of the file.
+  if (lines.length && invoiceAmount != null && Math.abs(total - invoiceAmount) >= 0.01) {
+    const usd = (n: number) => "$" + n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    problems.push(
+      `Amounts do not match: the lines add up to ${usd(total)}, but Invoice Amount is ${usd(invoiceAmount)} ` +
+      `(difference ${usd(Math.abs(total - invoiceAmount))}). Nothing was added to QuickBooks. Correct the file and upload it again.`
+    );
+  }
   const dup = lines.map((l) => normSku(l.sku)).filter((s, i, a) => a.indexOf(s) !== i);
   if (dup.length) warnings.push(`Same SKU appears more than once: ${[...new Set(dup)].join(", ")}.`);
 
