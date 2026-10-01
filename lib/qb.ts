@@ -101,7 +101,7 @@ async function conn(): Promise<Conn> {
   if (!MOCK && c.expires_at - 60_000 < Date.now()) {
     const t = await tokenRequest({ grant_type: "refresh_token", refresh_token: c.refresh_token }).catch(async (e) => {
       await kvDel(CONN_KEY);
-      throw new Error("QuickBooks connection expired. Please connect again. (" + e.message + ")");
+      throw new Error("The QuickBooks connection has expired. Click “Connect to QuickBooks” and log in again. (" + e.message + ")");
     });
     c.access_token = t.access_token;
     c.refresh_token = t.refresh_token; // Intuit rotates refresh tokens: always keep the newest
@@ -159,6 +159,7 @@ async function mdb(): Promise<MockDb> {
       { id: "104", name: "Mangosteen", sku: "OTHER-MANGOST-14G", type: "Inventory", active: true },
       { id: "105", name: "Bomb Pop | Fidel's | Flower | 7g (old)", sku: "FID-FLWR-BMBP-7G", type: "Inventory", active: false },
       { id: "106", name: "Sample Service", sku: "SVC-001", type: "Service", active: true },
+      { id: "108", name: "Grape Sunshine (old copy)", sku: "DBXHSN-6SWH-GSS-1G", type: "Inventory", active: true },
     ],
     stores: [{ id: "1", name: "Clubhouse" }, { id: "2", name: "Main Warehouse" }],
     bills: [], n: 1000,
@@ -242,7 +243,7 @@ export async function defaultAccounts(realmId: string): Promise<Accounts> {
     const accts = await queryAll("Account", "where Active = true");
     const find = (sub: string) => accts.find((a) => a.AccountSubType === sub)?.Id;
     const a = { income: find("SalesOfProductIncome"), expense: find("SuppliesMaterialsCogs"), asset: find("Inventory") };
-    if (!a.income || !a.expense || !a.asset) throw new Error("Could not find the default inventory accounts in QuickBooks.");
+    if (!a.income || !a.expense || !a.asset) throw new Error("Could not find the inventory accounts (Inventory Asset, Sales of Product Income, Cost of Goods Sold) in QuickBooks. Ask your accountant to check the chart of accounts.");
     best = [a.income, a.expense, a.asset].join("|");
   }
   const [income, expense, asset] = best.split("|");
@@ -274,6 +275,21 @@ export async function createItem(p: { name: string; sku: string; asOf: string; a
     AssetAccountRef: { value: p.accounts.asset },
   });
   return { id: j.Item.Id, name: j.Item.Name, sku: j.Item.Sku || "", type: j.Item.Type, active: true };
+}
+
+/** Change the name of an existing product. QuickBooks needs its current SyncToken. */
+export async function renameItem(id: string, name: string): Promise<void> {
+  if (MOCK) {
+    const db = await mdb();
+    if (db.items.some((i) => i.id !== id && i.name.toLowerCase() === name.toLowerCase()))
+      throw new Error(`Duplicate Name Exists Error: The name "${name}" is already used.`);
+    const it = db.items.find((i) => i.id === id);
+    if (it) it.name = name;
+    await kvSet("mock:db", db);
+    return;
+  }
+  const cur = await api(`item/${id}`);
+  await api("item", { Id: id, SyncToken: cur.Item.SyncToken, sparse: true, Name: name });
 }
 
 export type BillLine = { itemId: string; qty: number; amount: number };

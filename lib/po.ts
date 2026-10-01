@@ -30,6 +30,7 @@ const norm = (s: unknown) => String(s ?? "").replace(/\s+/g, " ").trim().toLower
 const round2 = (n: number) => Math.round(n * 100) / 100;
 const PLACEHOLDER = /^[-—–.\s]*$/;
 
+const LABEL: Record<string, string> = { name: "Product Name", sku: "SKU #", isNew: "New Item", qty: "Act. Qty", amount: "Received Amount" };
 const COLS: Record<string, string[]> = {
   name: ["product name"],
   sku: ["sku #", "sku", "sku#"],
@@ -69,7 +70,7 @@ export function parsePo(buf: ArrayBuffer): Po {
     const h = r.slice(0, 25).findIndex((row) => row?.some((c) => COLS.sku.includes(norm(c))));
     if (h >= 0) { rows = r; headerRow = h; break; }
   }
-  if (headerRow < 0) throw new Error("Could not find the product table (no “SKU #” column) in this file.");
+  if (headerRow < 0) throw new Error("This file does not look like a purchase order: no column titled “SKU #” was found. Check that you uploaded the right file.");
 
   // Top block: "Vendor:", "Date:", "Ref #:", "Invoice Amount:" with the value to the right.
   const top: Record<string, unknown> = {};
@@ -87,15 +88,15 @@ export function parsePo(buf: ArrayBuffer): Po {
   const problems: string[] = [];
   const warnings: string[] = [];
   for (const k of ["name", "sku", "isNew", "qty", "amount"])
-    if (col[k] < 0) problems.push(`Column not found in file: “${COLS[k][0]}”.`);
+    if (col[k] < 0) problems.push(`The file has no “${LABEL[k]}” column. Check the column titles in the header row (row ${headerRow + 1}).`);
 
   const vendor = String(top["vendor"] ?? "").trim();
   const date = toDate(top["date"]);
   const billNo = String(top["ref #"] ?? top["ref#"] ?? top["ref"] ?? "").trim();
   const invoiceAmount = toNum(top["invoice amount"]);
-  if (!vendor) problems.push("Vendor name is empty (cell next to “Vendor:”).");
-  if (!date) problems.push("Bill date is missing or not a date (cell next to “Date:”).");
-  if (!billNo) problems.push("Bill number is empty (cell next to “Ref #:”).");
+  if (!vendor) problems.push("Vendor name is empty. Fill in the cell next to “Vendor:” at the top of the file.");
+  if (!date) problems.push("Bill date is missing or not a valid date. Fill in the cell next to “Date:” at the top of the file.");
+  if (!billNo) problems.push("Bill number is empty. Fill in the cell next to “Ref #:” at the top of the file.");
   if (invoiceAmount == null)
     problems.push("Invoice Amount is missing at the top of the file (cell next to “Invoice Amount:”). Add it and upload the file again.");
 
@@ -115,12 +116,12 @@ export function parsePo(buf: ArrayBuffer): Po {
       let amount = toNum(row[col.amount]);
       if (amount == null && qty != null && rate != null) amount = qty * rate;
       const excelRow = r + 1;
-      if (!qty || qty <= 0) { problems.push(`Row ${excelRow} (${sku}): quantity is empty or zero.`); continue; }
-      if (amount == null || amount === 0) { warnings.push(`Row ${excelRow} (${sku}) has no cost/amount, so it is not added to the bill.`); continue; }
-      if (!shortName) { problems.push(`Row ${excelRow} (${sku}): product name is empty.`); continue; }
+      if (!qty || qty <= 0) { problems.push(`Row ${excelRow} (SKU ${sku}): “Act. Qty” is empty or 0. Enter the received quantity.`); continue; }
+      if (amount == null || amount === 0) { warnings.push(`Row ${excelRow} (SKU ${sku}) has no cost / amount, so it is not added to the bill.`); continue; }
+      if (!shortName) { problems.push(`Row ${excelRow} (SKU ${sku}): “Product Name” is empty.`); continue; }
       lines.push({ row: excelRow, fullName, shortName, sku, qty, amount: round2(amount), markedNew: norm(row[col.isNew]) === "yes" });
     }
-    if (!lines.length) problems.push("No product lines found in this file.");
+    if (!lines.length) problems.push("No product lines found. Each line needs a SKU, a quantity and an amount.");
   }
 
   const total = round2(lines.reduce((s, l) => s + l.amount, 0));
@@ -133,7 +134,7 @@ export function parsePo(buf: ArrayBuffer): Po {
     );
   }
   const dup = lines.map((l) => normSku(l.sku)).filter((s, i, a) => a.indexOf(s) !== i);
-  if (dup.length) warnings.push(`Same SKU appears more than once: ${[...new Set(dup)].join(", ")}.`);
+  if (dup.length) warnings.push(`The same SKU appears on more than one line: ${[...new Set(dup)].join(", ")}. Each line will be added to the bill; check this is correct.`);
 
   return { vendor, date: date || "", billNo, invoiceAmount, lines, total, skippedNotApproved: skipped, problems, warnings };
 }

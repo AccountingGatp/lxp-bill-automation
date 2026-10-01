@@ -40,7 +40,10 @@ export const POST = handler(async (req: Request) => {
         bySku.set(k, { id: created.id, active: true, name: created.name });
         results.push({ sku: it.sku, id: created.id });
       } catch (e) {
-        results.push({ sku: it.sku, error: e instanceof Error ? e.message : String(e) });
+        const m = e instanceof Error ? e.message : String(e);
+        results.push({ sku: it.sku, error: /duplicate name/i.test(m)
+          ? `A product named “${cleanName(it.name)}” already exists in QuickBooks (with another SKU). Click “Back to check”, change the name, and fill again.`
+          : m });
       }
     }
     return { results };

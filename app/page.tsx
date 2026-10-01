@@ -6,7 +6,7 @@ type Line = { row: number; fullName: string; shortName: string; sku: string; qty
 type Po = { vendor: string; date: string; billNo: string; invoiceAmount: number | null; lines: Line[]; total: number; problems: string[]; warnings: string[] };
 type Opt = { id: string; name: string };
 type ReadRes = { po: Po; vendor?: { matchedId: string | null; how: string | null; suggestions: Opt[]; all: Opt[] }; stores?: Opt[]; storeId?: string | null };
-type Sku = { sku: string; shortName: string; fullName: string; status: "exists" | "new" | "flag" | "inactive"; itemId?: string; existingName?: string; dupInQb?: number; existingType?: string; proposedName?: string; nameChanged?: boolean };
+type Sku = { sku: string; shortName: string; fullName: string; status: "exists" | "new" | "flag" | "inactive"; itemId?: string; existingName?: string; dupInQb?: number; existingType?: string; nameDiffers?: boolean; choices?: { id: string; name: string }[]; proposedName?: string; nameChanged?: boolean };
 type CheckRes = { skus: Sku[]; asOf: string; duplicateBill: boolean };
 type Status = { connected: boolean; companyName: string; environment: string };
 type Stage = "upload" | "vendor" | "check" | "fill" | "done";
@@ -39,6 +39,9 @@ export default function Home() {
   const [storeId, setStoreId] = useState("");
   const [check, setCheck] = useState<CheckRes | null>(null);
   const [names, setNames] = useState<Record<string, string>>({});
+  // Choices for SKUs already in QuickBooks: keep its name / rename it / which product to use (duplicate SKU)
+  type Decision = { mode: "keep" | "rename" | "pick"; name?: string; itemId?: string };
+  const [decisions, setDecisions] = useState<Record<string, Decision>>({});
   const [progress, setProgress] = useState<Step[]>([]);
   const [bill, setBill] = useState<{ id: string; url: string; total: number } | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -51,7 +54,7 @@ export default function Home() {
 
   function reset() {
     setStage("upload"); setRead(null); setCheck(null); setBill(null); setProgress([]); setErr(null);
-    setFileName(""); setVendorId(""); setNewVendor(""); setNames({});
+    setFileName(""); setVendorId(""); setNewVendor(""); setNames({}); setDecisions({});
     if (fileRef.current) fileRef.current.value = "";
   }
 
@@ -80,6 +83,7 @@ export default function Home() {
       const c = await post<CheckRes>("/api/check", { po: read.po, vendorId: vendorId && vendorId !== NEW ? vendorId : null });
       setCheck(c);
       setNames(Object.fromEntries(c.skus.filter((s) => s.status === "new" || s.status === "flag").map((s) => [s.sku, s.proposedName || s.fullName])));
+      setDecisions({});
       setStage("check");
     } catch (x) { setErr((x as Error).message); } finally { setBusy(false); }
   }
@@ -88,44 +92,58 @@ export default function Home() {
   async function fill() {
     if (!read || !check) return;
     const toCreate = check.skus.filter((s) => s.status === "new" || s.status === "flag");
+    const toRename = check.skus
+      .filter((s) => s.nameDiffers && decisions[s.sku]?.mode === "rename")
+      .map((s) => ({ itemId: s.itemId!, sku: s.sku, name: (decisions[s.sku].name || "").trim() }));
     const steps: Step[] = [
       { label: vendorId === NEW ? `Create vendor “${newVendor}”` : "Vendor", state: "wait" },
+      ...(toRename.length ? [{ label: `Change product names (${toRename.length})`, state: "wait" as StepState }] : []),
       { label: `New products (0 of ${toCreate.length})`, state: "wait" },
       { label: "Create bill", state: "wait" },
     ];
+    const S_VENDOR = 0, S_RENAME = toRename.length ? 1 : -1, S_NEW = toRename.length ? 2 : 1, S_BILL = S_NEW + 1;
     setProgress(steps); setStage("fill"); setErr(null); setBusy(true);
     const upd = (i: number, p: Partial<Step>) =>
       setProgress((old) => old.map((s, j) => (j === i ? { ...s, ...p } : s)));
-    let i = 0;
+    let i = S_VENDOR;
     try {
-      upd(0, { state: "run" });
+      upd(S_VENDOR, { state: "run" });
       const v = await post<{ vendorId: string }>("/api/fill/vendor", {
         fileVendor: read.po.vendor, vendorId: vendorId === NEW ? null : vendorId, newName: newVendor,
       });
-      upd(0, { state: "ok" });
+      upd(S_VENDOR, { state: "ok" });
 
-      i = 1; upd(1, { state: toCreate.length ? "run" : "ok", note: toCreate.length ? undefined : "none needed" });
+      if (toRename.length) {
+        i = S_RENAME; upd(S_RENAME, { state: "run" });
+        const r = await post<{ results: { sku: string; ok?: boolean; error?: string }[] }>("/api/fill/rename", { items: toRename });
+        const bad = r.results.filter((x) => !x.ok).map((x) => `${x.sku}: ${x.error}`);
+        if (bad.length) throw new Error("Some product names could not be changed:\n" + bad.join("\n"));
+        upd(S_RENAME, { state: "ok" });
+      }
+
+      i = S_NEW; upd(S_NEW, { state: toCreate.length ? "run" : "ok", note: toCreate.length ? undefined : "none needed" });
       const ids: Record<string, string> = Object.fromEntries(check.skus.filter((s) => s.itemId).map((s) => [normSku(s.sku), s.itemId!]));
+      for (const s of check.skus) if (s.choices && decisions[s.sku]?.itemId) ids[normSku(s.sku)] = decisions[s.sku].itemId!; // chosen product for duplicate SKU
       const failed: string[] = [];
       for (let k = 0; k < toCreate.length; k += 8) {
         const batch = toCreate.slice(k, k + 8).map((s) => ({ sku: s.sku, name: names[s.sku] || s.fullName }));
         const r = await post<{ results: { sku: string; id?: string; error?: string }[] }>("/api/fill/items", { items: batch, asOf: check.asOf });
         for (const x of r.results) x.id ? (ids[normSku(x.sku)] = x.id) : failed.push(`${x.sku}: ${x.error}`);
-        upd(1, { state: "run", label: `New products (${Math.min(k + 8, toCreate.length)} of ${toCreate.length})` });
+        upd(S_NEW, { state: "run", label: `New products (${Math.min(k + 8, toCreate.length)} of ${toCreate.length})` });
       }
-      if (failed.length) throw new Error("Some products could not be created:\n" + failed.join("\n"));
-      if (toCreate.length) upd(1, { state: "ok" });
+      if (failed.length) throw new Error("Some new products could not be created:\n" + failed.join("\n"));
+      if (toCreate.length) upd(S_NEW, { state: "ok" });
 
-      i = 2; upd(2, { state: "run" });
+      i = S_BILL; upd(S_BILL, { state: "run" });
       const lines = read.po.lines.map((l) => ({ itemId: ids[normSku(l.sku)], qty: l.qty, amount: l.amount }));
       const b = await post<{ id: string; url: string; total: number }>("/api/fill/bill", {
         vendorId: v.vendorId, date: read.po.date, billNo: read.po.billNo, storeId, lines,
       });
-      upd(2, { state: "ok" });
+      upd(S_BILL, { state: "ok" });
       setBill(b); setStage("done");
     } catch (x) {
       upd(i, { state: "fail" });
-      setErr((x as Error).message + "\n\nIt is safe to click “Try again”: products already created are reused, and the bill is never added twice.");
+      setErr((x as Error).message + "\n\nWhat to do: fix the problem (use “Back to check” to change names), then click “Try again”. It is safe: products already created are reused, and the bill is never added twice.");
     } finally { setBusy(false); }
   }
 
@@ -143,7 +161,19 @@ export default function Home() {
   const po = read?.po;
   const locked = stage === "fill" || stage === "done";
   const vendorName = vendorId === NEW ? newVendor : read?.vendor?.all.find((v) => v.id === vendorId)?.name;
-  const blockFill = !!check?.duplicateBill || counts.inactive.length > 0 || Object.values(names).some((n) => !n.trim());
+  const toReview = (check?.skus || []).filter((s) => s.status === "exists" && (s.nameDiffers || s.choices));
+  const undecided = toReview.filter((s) => {
+    const d = decisions[s.sku];
+    if (!d) return true;
+    if (s.choices) return !d.itemId;
+    return d.mode === "rename" && !(d.name || "").trim();
+  });
+  const keepAll = () => setDecisions((old) => {
+    const n = { ...old };
+    for (const s of toReview) if (s.nameDiffers && !n[s.sku]) n[s.sku] = { mode: "keep" };
+    return n;
+  });
+  const blockFill = undecided.length > 0 || !!check?.duplicateBill || counts.inactive.length > 0 || Object.values(names).some((n) => !n.trim());
 
   return (
     <main>
@@ -260,7 +290,7 @@ export default function Home() {
               <div className="skusum">
                 <span className="ok-text">✓ {counts.exists} already in QuickBooks</span>
                 <span className="new-text">＋ {counts.new} new</span>
-                {counts.flag > 0 && <span className="warn-text">⚠ {counts.flag} marked “No” but not found</span>}
+                {counts.flag > 0 && <span className="warn-text">⚠ {counts.flag} marked “No” in the file but not found in QuickBooks — will be created</span>}
               </div>
 
               {counts.inactive.length > 0 && (
@@ -280,9 +310,54 @@ export default function Home() {
               {check.skus.filter((s) => s.status === "exists" && s.existingType && s.existingType !== "Inventory").map((s) => (
                 <div key={"t" + s.sku} className="note">SKU <b>{s.sku}</b> matches “{s.existingName}”, which is a <b>{s.existingType}</b> product (not Inventory) in QuickBooks. Please check it.</div>
               ))}
-              {check.skus.filter((s) => (s.dupInQb || 0) > 1).map((s) => (
-                <div key={"d" + s.sku} className="note">SKU <b>{s.sku}</b> is already used by {s.dupInQb} products in QuickBooks. The bill will use “{s.existingName}”. Please clean up the duplicate in QuickBooks.</div>
-              ))}
+              {toReview.length > 0 && (
+                <div className="review">
+                  <div className="review-head">
+                    <b>Please check {toReview.length === 1 ? "this product" : `these ${toReview.length} products`} before filling</b>
+                    {toReview.some((s) => s.nameDiffers) && stage === "check" && (
+                      <button className="link" onClick={keepAll}>Keep all QuickBooks names</button>
+                    )}
+                  </div>
+                  {toReview.map((s) => {
+                    const d = decisions[s.sku];
+                    const set = (nd: Decision) => setDecisions({ ...decisions, [s.sku]: nd });
+                    const ro = stage !== "check";
+                    return (
+                      <div key={"r" + s.sku} className={`issue ${undecided.includes(s) ? "open" : "done"}`}>
+                        <div className="mono">{undecided.includes(s) ? "⚠" : "✓"} {s.sku}</div>
+                        {s.choices ? (
+                          <>
+                            <p>This SKU is used by <b>{s.choices.length} different products</b> in QuickBooks. Choose the one to put on this bill:</p>
+                            {s.choices.map((c) => (
+                              <label key={c.id} className="opt">
+                                <input type="radio" disabled={ro} checked={d?.itemId === c.id} onChange={() => set({ mode: "pick", itemId: c.id })} /> {c.name}
+                              </label>
+                            ))}
+                            <p className="small muted">Tip: to stop this message next time, make the extra product inactive in QuickBooks.</p>
+                          </>
+                        ) : (
+                          <>
+                            <p>This SKU is already in QuickBooks, but with a <b>different name</b>:</p>
+                            <div className="names">
+                              <span>Excel file:</span><b>{s.fullName}</b>
+                              <span>QuickBooks:</span><b>{s.existingName}</b>
+                            </div>
+                            <label className="opt">
+                              <input type="radio" disabled={ro} checked={d?.mode === "keep"} onChange={() => set({ mode: "keep" })} /> Keep the QuickBooks name (nothing changes)
+                            </label>
+                            <label className="opt">
+                              <input type="radio" disabled={ro} checked={d?.mode === "rename"} onChange={() => set({ mode: "rename", name: d?.name ?? s.fullName })} /> Change the QuickBooks name to:
+                            </label>
+                            {d?.mode === "rename" && (
+                              <input className="rename" disabled={ro} value={d.name ?? ""} onChange={(e) => set({ mode: "rename", name: e.target.value })} />
+                            )}
+                          </>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
 
               {counts.new + counts.flag > 0 && (
                 <>
@@ -306,7 +381,10 @@ export default function Home() {
                 </>
               )}
               {stage === "check" && (
-                <button className="btn big" disabled={busy || blockFill} onClick={fill}>Fill data to QuickBooks</button>
+                <>
+                  {undecided.length > 0 && <p className="warn-text center">Choose an option for the {undecided.length} product(s) marked ⚠ above to continue.</p>}
+                  <button className="btn big" disabled={busy || blockFill} onClick={fill}>Fill data to QuickBooks</button>
+                </>
               )}
             </section>
           )}

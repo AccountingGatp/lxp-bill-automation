@@ -9,13 +9,13 @@ export const dynamic = "force-dynamic";
 export const POST = handler(async (req: Request) => {
   const form = await req.formData();
   const file = form.get("file");
-  if (!(file instanceof File)) throw new Error("No file received.");
+  if (!(file instanceof File)) throw new Error("No file was received. Please choose the Excel file again.");
   if (!/\.(xlsx|xlsm|xls)$/i.test(file.name)) throw new Error("Please upload an Excel file (.xlsx).");
   const po = parsePo(await file.arrayBuffer());
   if (po.problems.length) return { po };
 
   const st = await status();
-  if (!st.connected) throw new Error("QuickBooks is not connected.");
+  if (!st.connected) throw new Error("QuickBooks is not connected. Click “Connect to QuickBooks” at the top.");
   const [vendors, stores] = await Promise.all([listVendors(), listStores()]);
 
   // 1) a mapping saved earlier wins, 2) else exact name match, 3) else user picks.

@@ -63,3 +63,17 @@ tr.flag td { background: #fff8eb; }
 .row { display: flex; gap: 10px; flex-wrap: wrap; }
 form.card h1 { margin-bottom: 4px; }
 form.card input { margin: 8px 0 4px; }
+
+.review { border: 1px solid #f0d9a8; background: #fffaf0; border-radius: 10px; padding: 12px 14px; margin: 14px 0; }
+.review-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 6px; }
+.issue { background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin-top: 8px; }
+.issue.open { border-color: #e8b860; }
+.issue.done { opacity: .85; }
+.issue p { margin: 6px 0; font-size: 14px; }
+.issue .mono { padding: 0; font-weight: 600; }
+.names { display: grid; grid-template-columns: 90px 1fr; gap: 2px 8px; font-size: 14px; margin: 4px 0 8px; }
+.names span { color: var(--muted); }
+.opt { display: flex; gap: 8px; align-items: center; font-size: 14px; padding: 3px 0; cursor: pointer; }
+.opt input { width: auto; }
+input.rename { margin: 4px 0 2px 24px; width: calc(100% - 24px); }
+.center { text-align: center; margin: 10px 0 0; }

@@ -34,6 +34,8 @@ export type SkuResult = {
   existingName?: string;
   dupInQb?: number; // how many QuickBooks products already share this SKU (>1 = existing duplicate)
   existingType?: string; // QuickBooks type of the matched product (Inventory, NonInventory, Service)
+  nameDiffers?: boolean; // SKU found, but the QuickBooks name is different from the file name
+  choices?: { id: string; name: string }[]; // SKU used by 2+ ACTIVE products -> user must pick one
   proposedName?: string;
   nameChanged?: boolean;
 };
@@ -56,7 +58,14 @@ export function checkSkus(lines: PoLine[], items: Item[]): SkuResult[] {
     if (found?.length) {
       const active = found.filter((i) => i.active).sort((a, b) => Number(a.id) - Number(b.id));
       const base = { sku: l.sku, shortName: l.shortName, fullName: l.fullName, dupInQb: found.length };
-      if (active.length) seen.set(k, { ...base, status: "exists", itemId: active[0].id, existingName: active[0].name, existingType: active[0].type });
+      if (active.length) {
+        const fileName = cleanName(l.fullName || l.shortName).toLowerCase();
+        seen.set(k, {
+          ...base, status: "exists", itemId: active[0].id, existingName: active[0].name, existingType: active[0].type,
+          nameDiffers: active.length === 1 && active[0].name.trim().toLowerCase() !== fileName,
+          choices: active.length > 1 ? active.map((i) => ({ id: i.id, name: i.name })) : undefined,
+        });
+      }
       else seen.set(k, { ...base, status: "inactive", existingName: found[0].name });
       continue;
     }
