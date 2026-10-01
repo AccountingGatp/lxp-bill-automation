@@ -276,7 +276,7 @@ export async function createItem(p: { name: string; sku: string; asOf: string; a
   return { id: j.Item.Id, name: j.Item.Name, sku: j.Item.Sku || "", type: j.Item.Type, active: true };
 }
 
-export type BillLine = { itemId: string; qty: number; amount: number; description: string };
+export type BillLine = { itemId: string; qty: number; amount: number };
 export async function createBill(p: {
   vendorId: string; date: string; docNumber: string; storeId?: string; lines: BillLine[];
 }): Promise<{ id: string; url: string; total: number }> {
@@ -296,7 +296,6 @@ export async function createBill(p: {
     Line: p.lines.map((l) => ({
       DetailType: "ItemBasedExpenseLineDetail",
       Amount: l.amount,
-      Description: l.description,
       ItemBasedExpenseLineDetail: {
         ItemRef: { value: l.itemId },
         Qty: l.qty,

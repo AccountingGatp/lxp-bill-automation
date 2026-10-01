@@ -117,7 +117,7 @@ export default function Home() {
       if (toCreate.length) upd(1, { state: "ok" });
 
       i = 2; upd(2, { state: "run" });
-      const lines = read.po.lines.map((l) => ({ itemId: ids[normSku(l.sku)], qty: l.qty, amount: l.amount, description: l.fullName }));
+      const lines = read.po.lines.map((l) => ({ itemId: ids[normSku(l.sku)], qty: l.qty, amount: l.amount }));
       const b = await post<{ id: string; url: string; total: number }>("/api/fill/bill", {
         vendorId: v.vendorId, date: read.po.date, billNo: read.po.billNo, storeId, lines,
       });
