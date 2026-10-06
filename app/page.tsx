@@ -328,10 +328,15 @@ export default function Home() {
                     const ro = stage !== "check";
                     return (
                       <div key={"r" + s.sku} className={`issue ${undecided.includes(s) ? "open" : "resolved"}`}>
-                        <div className={s.nameMatches ? "issue-title" : "mono"}>{undecided.includes(s) ? "⚠" : "✓"} {s.nameMatches ? s.fullName : s.sku}</div>
+                        <div className={s.nameMatches ? "issue-title" : "mono"}>{undecided.includes(s) ? "⚠" : "✓"} {s.nameMatches ? "Product name already exists in QuickBooks with a different SKU" : s.sku}</div>
                         {s.nameMatches ? (
                           <>
-                            <p>This product name is in the Excel file <b>and</b> in QuickBooks, but the <b>SKU is different</b>. Which SKU should be used on this bill?</p>
+                            <div className="names facts">
+                              <span>Product name:</span><b>{s.fullName}</b>
+                              <span>Excel SKU:</span><b className="mono-in">{s.sku}</b>
+                              <span>QBO SKU:</span><b className="mono-in">{s.nameMatches.map((m) => m.sku || "(no SKU)").join(", ")}</b>
+                            </div>
+                            <p><b>Which SKU should be used on this bill?</b></p>
                             <label className={`opt sku ${d?.mode === "create" ? "sel" : ""}`}>
                               <input type="radio" disabled={ro} checked={d?.mode === "create"} onChange={() => set({ mode: "create" })} />
                               <span className="skulabel">Excel SKU:</span>
