@@ -328,25 +328,34 @@ export default function Home() {
                     const ro = stage !== "check";
                     return (
                       <div key={"r" + s.sku} className={`issue ${undecided.includes(s) ? "open" : "resolved"}`}>
-                        <div className="mono">{undecided.includes(s) ? "⚠" : "✓"} {s.sku}</div>
+                        <div className={s.nameMatches ? "issue-title" : "mono"}>{undecided.includes(s) ? "⚠" : "✓"} {s.nameMatches ? s.fullName : s.sku}</div>
                         {s.nameMatches ? (
                           <>
-                            <p>This SKU is <b>not</b> in QuickBooks yet, but the <b>same product name</b> is already used with a <b>different SKU</b>. Choose the SKU to use on this bill:</p>
-                            <div className="names">
-                              <span>Excel file:</span><b>{s.fullName} — SKU {s.sku}</b>
-                            </div>
-                            {s.nameMatches.map((m) => (
-                              <label key={m.id} className="opt">
-                                <input type="radio" disabled={ro} checked={d?.mode === "pick" && d.itemId === m.id} onChange={() => set({ mode: "pick", itemId: m.id })} />
-                                <span>Use the QuickBooks product with SKU <b className="mono-in">{m.sku || "(no SKU)"}</b> — nothing new is created<br /><small className="muted">{m.name}</small></span>
-                              </label>
-                            ))}
-                            <label className="opt">
+                            <p>This product name is in the Excel file <b>and</b> in QuickBooks, but the <b>SKU is different</b>. Which SKU should be used on this bill?</p>
+                            <label className={`opt sku ${d?.mode === "create" ? "sel" : ""}`}>
                               <input type="radio" disabled={ro} checked={d?.mode === "create"} onChange={() => set({ mode: "create" })} />
-                              <span>Create a new product with the file SKU <b className="mono-in">{s.sku}</b>, named:</span>
+                              <span className="skulabel">Excel SKU:</span>
+                              <span><b className="mono-in">{s.sku}</b><br /><small className="muted">Creates a new product in QuickBooks with this SKU</small></span>
                             </label>
                             {d?.mode === "create" && (
-                              <input className="rename" disabled={ro} value={names[s.sku] ?? ""} onChange={(e) => setNames({ ...names, [s.sku]: e.target.value })} />
+                              <div className="newname">
+                                <small>Name for the new product (QuickBooks does not allow two products with the same name, so the SKU is added — you can change it):</small>
+                                <input className="rename" disabled={ro} value={names[s.sku] ?? ""} onChange={(e) => setNames({ ...names, [s.sku]: e.target.value })} />
+                              </div>
+                            )}
+                            {s.nameMatches.map((m) => (
+                              <label key={m.id} className={`opt sku ${d?.mode === "pick" && d.itemId === m.id ? "sel" : ""}`}>
+                                <input type="radio" disabled={ro} checked={d?.mode === "pick" && d.itemId === m.id} onChange={() => set({ mode: "pick", itemId: m.id })} />
+                                <span className="skulabel">QBO SKU:</span>
+                                <span><b className="mono-in">{m.sku || "(no SKU)"}</b><br /><small className="muted">Uses the existing QuickBooks product — nothing new is created</small></span>
+                              </label>
+                            ))}
+                            {d && (
+                              <p className="chosen">
+                                Selected: {d.mode === "create"
+                                  ? <>Excel SKU <b className="mono-in">{s.sku}</b> (new product)</>
+                                  : <>QBO SKU <b className="mono-in">{s.nameMatches.find((m) => m.id === d.itemId)?.sku || "(no SKU)"}</b> (existing product)</>}
+                              </p>
                             )}
                           </>
                         ) : s.choices ? (

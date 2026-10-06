@@ -80,3 +80,12 @@ input.rename { margin: 4px 0 2px 24px; width: calc(100% - 24px); }
 
 .mono-in { font-family: ui-monospace, Consolas, monospace; font-size: 13px; }
 .opt input[type=radio] { margin-top: 3px; flex: none; }
+
+.issue-title { font-weight: 700; font-size: 14px; }
+.opt.sku { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; margin-top: 6px; align-items: flex-start; }
+.opt.sku.sel { border-color: var(--brand); background: #eef7f1; }
+.skulabel { width: 92px; white-space: nowrap; flex: none; color: var(--muted); font-weight: 600; padding-top: 1px; }
+.newname { margin: 6px 0 4px 24px; }
+.newname small { color: var(--muted); display: block; margin-bottom: 4px; }
+.newname input.rename { margin: 0; width: 100%; }
+.chosen { font-size: 13px; color: var(--ok); margin: 8px 0 0; }
