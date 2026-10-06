@@ -6,7 +6,7 @@ type Line = { row: number; fullName: string; shortName: string; sku: string; qty
 type Po = { vendor: string; date: string; billNo: string; invoiceAmount: number | null; lines: Line[]; total: number; problems: string[]; warnings: string[] };
 type Opt = { id: string; name: string };
 type ReadRes = { po: Po; vendor?: { matchedId: string | null; how: string | null; suggestions: Opt[]; all: Opt[] }; stores?: Opt[]; storeId?: string | null };
-type Sku = { sku: string; shortName: string; fullName: string; status: "exists" | "new" | "flag" | "inactive"; itemId?: string; existingName?: string; dupInQb?: number; existingType?: string; nameDiffers?: boolean; choices?: { id: string; name: string }[]; proposedName?: string; nameChanged?: boolean };
+type Sku = { sku: string; shortName: string; fullName: string; status: "exists" | "new" | "flag" | "inactive"; itemId?: string; existingName?: string; dupInQb?: number; existingType?: string; nameDiffers?: boolean; choices?: { id: string; name: string }[]; nameMatches?: { id: string; name: string; sku: string }[]; proposedName?: string; nameChanged?: boolean };
 type CheckRes = { skus: Sku[]; asOf: string; duplicateBill: boolean };
 type Status = { connected: boolean; companyName: string; environment: string };
 type Stage = "upload" | "vendor" | "check" | "fill" | "done";
@@ -40,7 +40,7 @@ export default function Home() {
   const [check, setCheck] = useState<CheckRes | null>(null);
   const [names, setNames] = useState<Record<string, string>>({});
   // Choices for SKUs already in QuickBooks: keep its name / rename it / which product to use (duplicate SKU)
-  type Decision = { mode: "keep" | "rename" | "pick"; name?: string; itemId?: string };
+  type Decision = { mode: "keep" | "rename" | "pick" | "create"; name?: string; itemId?: string };
   const [decisions, setDecisions] = useState<Record<string, Decision>>({});
   const [progress, setProgress] = useState<Step[]>([]);
   const [bill, setBill] = useState<{ id: string; url: string; total: number } | null>(null);
@@ -91,7 +91,7 @@ export default function Home() {
   // ---- Step 4: fill QuickBooks
   async function fill() {
     if (!read || !check) return;
-    const toCreate = check.skus.filter((s) => s.status === "new" || s.status === "flag");
+    const toCreate = check.skus.filter((s) => (s.status === "new" || s.status === "flag") && !(s.nameMatches && decisions[s.sku]?.mode === "pick"));
     const toRename = check.skus
       .filter((s) => s.nameDiffers && decisions[s.sku]?.mode === "rename")
       .map((s) => ({ itemId: s.itemId!, sku: s.sku, name: (decisions[s.sku].name || "").trim() }));
@@ -123,7 +123,8 @@ export default function Home() {
 
       i = S_NEW; upd(S_NEW, { state: toCreate.length ? "run" : "ok", note: toCreate.length ? undefined : "none needed" });
       const ids: Record<string, string> = Object.fromEntries(check.skus.filter((s) => s.itemId).map((s) => [normSku(s.sku), s.itemId!]));
-      for (const s of check.skus) if (s.choices && decisions[s.sku]?.itemId) ids[normSku(s.sku)] = decisions[s.sku].itemId!; // chosen product for duplicate SKU
+      for (const s of check.skus) // product chosen on screen (duplicate SKU, or same name with another SKU)
+        if ((s.choices || s.nameMatches) && decisions[s.sku]?.mode === "pick" && decisions[s.sku].itemId) ids[normSku(s.sku)] = decisions[s.sku].itemId!;
       const failed: string[] = [];
       for (let k = 0; k < toCreate.length; k += 8) {
         const batch = toCreate.slice(k, k + 8).map((s) => ({ sku: s.sku, name: names[s.sku] || s.fullName }));
@@ -161,10 +162,12 @@ export default function Home() {
   const po = read?.po;
   const locked = stage === "fill" || stage === "done";
   const vendorName = vendorId === NEW ? newVendor : read?.vendor?.all.find((v) => v.id === vendorId)?.name;
-  const toReview = (check?.skus || []).filter((s) => s.status === "exists" && (s.nameDiffers || s.choices));
+  const toReview = (check?.skus || []).filter((s) =>
+    (s.status === "exists" && (s.nameDiffers || s.choices)) || ((s.status === "new" || s.status === "flag") && s.nameMatches));
   const undecided = toReview.filter((s) => {
     const d = decisions[s.sku];
     if (!d) return true;
+    if (s.nameMatches) return d.mode === "pick" ? !d.itemId : !(names[s.sku] || "").trim();
     if (s.choices) return !d.itemId;
     return d.mode === "rename" && !(d.name || "").trim();
   });
@@ -173,7 +176,8 @@ export default function Home() {
     for (const s of toReview) if (s.nameDiffers && !n[s.sku]) n[s.sku] = { mode: "keep" };
     return n;
   });
-  const blockFill = undecided.length > 0 || !!check?.duplicateBill || counts.inactive.length > 0 || Object.values(names).some((n) => !n.trim());
+  const blockFill = undecided.length > 0 || !!check?.duplicateBill || counts.inactive.length > 0 || (check?.skus || []).some((s) =>
+    (s.status === "new" || s.status === "flag") && !(s.nameMatches && decisions[s.sku]?.mode === "pick") && !(names[s.sku] || "").trim());
 
   return (
     <main>
@@ -323,9 +327,29 @@ export default function Home() {
                     const set = (nd: Decision) => setDecisions({ ...decisions, [s.sku]: nd });
                     const ro = stage !== "check";
                     return (
-                      <div key={"r" + s.sku} className={`issue ${undecided.includes(s) ? "open" : "done"}`}>
+                      <div key={"r" + s.sku} className={`issue ${undecided.includes(s) ? "open" : "resolved"}`}>
                         <div className="mono">{undecided.includes(s) ? "⚠" : "✓"} {s.sku}</div>
-                        {s.choices ? (
+                        {s.nameMatches ? (
+                          <>
+                            <p>This SKU is <b>not</b> in QuickBooks yet, but the <b>same product name</b> is already used with a <b>different SKU</b>. Choose the SKU to use on this bill:</p>
+                            <div className="names">
+                              <span>Excel file:</span><b>{s.fullName} — SKU {s.sku}</b>
+                            </div>
+                            {s.nameMatches.map((m) => (
+                              <label key={m.id} className="opt">
+                                <input type="radio" disabled={ro} checked={d?.mode === "pick" && d.itemId === m.id} onChange={() => set({ mode: "pick", itemId: m.id })} />
+                                <span>Use the QuickBooks product with SKU <b className="mono-in">{m.sku || "(no SKU)"}</b> — nothing new is created<br /><small className="muted">{m.name}</small></span>
+                              </label>
+                            ))}
+                            <label className="opt">
+                              <input type="radio" disabled={ro} checked={d?.mode === "create"} onChange={() => set({ mode: "create" })} />
+                              <span>Create a new product with the file SKU <b className="mono-in">{s.sku}</b>, named:</span>
+                            </label>
+                            {d?.mode === "create" && (
+                              <input className="rename" disabled={ro} value={names[s.sku] ?? ""} onChange={(e) => setNames({ ...names, [s.sku]: e.target.value })} />
+                            )}
+                          </>
+                        ) : s.choices ? (
                           <>
                             <p>This SKU is used by <b>{s.choices.length} different products</b> in QuickBooks. Choose the one to put on this bill:</p>
                             {s.choices.map((c) => (
@@ -359,13 +383,13 @@ export default function Home() {
                 </div>
               )}
 
-              {counts.new + counts.flag > 0 && (
+              {check.skus.some((s) => (s.status === "new" || s.status === "flag") && !s.nameMatches) && (
                 <>
                   <p className="muted small">These will be created with quantity 0, as-of date <b>{usDate(check.asOf)}</b>, non-taxable.</p>
                   <table>
                     <thead><tr><th>SKU</th><th>Product name in QuickBooks</th></tr></thead>
                     <tbody>
-                      {check.skus.filter((s) => s.status === "new" || s.status === "flag").map((s) => (
+                      {check.skus.filter((s) => (s.status === "new" || s.status === "flag") && !s.nameMatches).map((s) => (
                         <tr key={s.sku} className={s.status === "flag" ? "flag" : ""}>
                           <td className="mono">{s.status === "flag" && "⚠ "}{s.sku}</td>
                           <td>

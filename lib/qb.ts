@@ -160,6 +160,7 @@ async function mdb(): Promise<MockDb> {
       { id: "105", name: "Bomb Pop | Fidel's | Flower | 7g (old)", sku: "FID-FLWR-BMBP-7G", type: "Inventory", active: false },
       { id: "106", name: "Sample Service", sku: "SVC-001", type: "Service", active: true },
       { id: "108", name: "Grape Sunshine (old copy)", sku: "DBXHSN-6SWH-GSS-1G", type: "Inventory", active: true },
+      { id: "109", name: "Mango Smoothie | Fidel's | Hash Infused Prerolls (5pk) | 3.5g", sku: "OLD-FID-MANGS", type: "Inventory", active: true },
     ],
     stores: [{ id: "1", name: "Clubhouse" }, { id: "2", name: "Main Warehouse" }],
     bills: [], n: 1000,

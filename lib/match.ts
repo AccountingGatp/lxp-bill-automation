@@ -36,6 +36,7 @@ export type SkuResult = {
   existingType?: string; // QuickBooks type of the matched product (Inventory, NonInventory, Service)
   nameDiffers?: boolean; // SKU found, but the QuickBooks name is different from the file name
   choices?: { id: string; name: string }[]; // SKU used by 2+ ACTIVE products -> user must pick one
+  nameMatches?: { id: string; name: string; sku: string }[]; // SKU is new, but this NAME is already used by product(s) with another SKU
   proposedName?: string;
   nameChanged?: boolean;
 };
@@ -72,6 +73,9 @@ export function checkSkus(lines: PoLine[], items: Item[]): SkuResult[] {
     // New product: use the full name ("Gun Metal Z | Fidel's | Flower | 7g"), like existing QuickBooks items.
     // If that exact name is already used by another product, add the SKU so it stays unique.
     const base = cleanName(l.fullName || l.shortName);
+    const sameName = items
+      .filter((i) => i.active && i.name.trim().toLowerCase() === base.toLowerCase())
+      .map((i) => ({ id: i.id, name: i.name, sku: i.sku }));
     const candidates = [base, cleanName(`${base} - ${l.sku}`)];
     const name = candidates.find((c) => !taken.has(c.toLowerCase())) || cleanName(`${base} - ${l.sku} - 2`);
     taken.add(name.toLowerCase());
@@ -79,6 +83,7 @@ export function checkSkus(lines: PoLine[], items: Item[]): SkuResult[] {
       sku: l.sku, shortName: l.shortName, fullName: l.fullName,
       status: l.markedNew ? "new" : "flag",
       proposedName: name, nameChanged: name !== base,
+      nameMatches: sameName.length ? sameName : undefined,
     });
   }
   return [...seen.values()];
