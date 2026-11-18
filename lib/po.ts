@@ -20,6 +20,7 @@ export type Po = {
   billNo: string;
   invoiceAmount: number | null;
   lines: PoLine[];
+  noAmountLines: PoLine[]; // have a quantity but no cost/amount -> user chooses Add ($0) or Ignore on the check screen
   total: number;
   skippedNotApproved: number;
   problems: string[]; // stop: must be fixed in the file
@@ -101,6 +102,7 @@ export function parsePo(buf: ArrayBuffer): Po {
     problems.push("Invoice Amount is missing at the top of the file (cell next to “Invoice Amount:”). Add it and upload the file again.");
 
   const lines: PoLine[] = [];
+  const noAmountLines: PoLine[] = [];
   let skipped = 0;
   let skippedAmount = 0;
   if (!problems.length) {
@@ -117,11 +119,14 @@ export function parsePo(buf: ArrayBuffer): Po {
       if (amount == null && qty != null && rate != null) amount = qty * rate;
       const excelRow = r + 1;
       if (!qty || qty <= 0) { problems.push(`Row ${excelRow} (SKU ${sku}): “Act. Qty” is empty or 0. Enter the received quantity.`); continue; }
-      if (amount == null || amount === 0) { warnings.push(`Row ${excelRow} (SKU ${sku}) has no cost / amount, so it is not added to the bill.`); continue; }
       if (!shortName) { problems.push(`Row ${excelRow} (SKU ${sku}): “Product Name” is empty.`); continue; }
+      if (amount == null || amount === 0) {
+        noAmountLines.push({ row: excelRow, fullName, shortName, sku, qty, amount: 0, markedNew: norm(row[col.isNew]) === "yes" });
+        continue;
+      }
       lines.push({ row: excelRow, fullName, shortName, sku, qty, amount: round2(amount), markedNew: norm(row[col.isNew]) === "yes" });
     }
-    if (!lines.length) problems.push("No product lines found. Each line needs a SKU, a quantity and an amount.");
+    if (!lines.length && !noAmountLines.length) problems.push("No product lines found. Each line needs a SKU, a quantity and an amount.");
   }
 
   const total = round2(lines.reduce((s, l) => s + l.amount, 0));
@@ -136,7 +141,7 @@ export function parsePo(buf: ArrayBuffer): Po {
   const dup = lines.map((l) => normSku(l.sku)).filter((s, i, a) => a.indexOf(s) !== i);
   if (dup.length) warnings.push(`The same SKU appears on more than one line: ${[...new Set(dup)].join(", ")}. Each line will be added to the bill; check this is correct.`);
 
-  return { vendor, date: date || "", billNo, invoiceAmount, lines, total, skippedNotApproved: skipped, problems, warnings };
+  return { vendor, date: date || "", billNo, invoiceAmount, lines, noAmountLines, total, skippedNotApproved: skipped, problems, warnings };
 }
 
 // As-of date for new products: 1st of the bill's month.

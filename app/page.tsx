@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { normSku } from "@/lib/sku";
 
 type Line = { row: number; fullName: string; shortName: string; sku: string; qty: number; amount: number; markedNew: boolean };
-type Po = { vendor: string; date: string; billNo: string; invoiceAmount: number | null; lines: Line[]; total: number; problems: string[]; warnings: string[] };
+type Po = { noAmountLines: Line[]; vendor: string; date: string; billNo: string; invoiceAmount: number | null; lines: Line[]; total: number; problems: string[]; warnings: string[] };
 type Opt = { id: string; name: string };
 type ReadRes = { po: Po; vendor?: { matchedId: string | null; how: string | null; suggestions: Opt[]; all: Opt[] }; stores?: Opt[]; storeId?: string | null };
 type Sku = { sku: string; shortName: string; fullName: string; status: "exists" | "new" | "flag" | "inactive"; itemId?: string; existingName?: string; dupInQb?: number; existingType?: string; nameDiffers?: boolean; choices?: { id: string; name: string }[]; nameMatches?: { id: string; name: string; sku: string }[]; proposedName?: string; nameChanged?: boolean };
@@ -42,6 +42,14 @@ export default function Home() {
   // Choices for SKUs already in QuickBooks: keep its name / rename it / which product to use (duplicate SKU)
   type Decision = { mode: "keep" | "rename" | "pick" | "create"; name?: string; itemId?: string };
   const [decisions, setDecisions] = useState<Record<string, Decision>>({});
+  // Lines with a quantity but no amount: add to the bill at $0, or ignore (key = Excel row number)
+  const [zeroDec, setZeroDec] = useState<Record<number, "add" | "ignore">>({});
+  const zeroLines = read?.po.noAmountLines || [];
+  const zeroOpen = zeroLines.filter((l) => !zeroDec[l.row]);
+  const activeLines = [...(read?.po.lines || []), ...zeroLines.filter((l) => zeroDec[l.row] === "add")];
+  const usedSkus = new Set(activeLines.map((l) => normSku(l.sku)));
+  // only SKUs that will really be on the bill (ignored no-amount lines are left out)
+  const skus = (check?.skus || []).filter((x) => usedSkus.has(normSku(x.sku)));
   const [progress, setProgress] = useState<Step[]>([]);
   const [bill, setBill] = useState<{ id: string; url: string; total: number } | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -54,7 +62,7 @@ export default function Home() {
 
   function reset() {
     setStage("upload"); setRead(null); setCheck(null); setBill(null); setProgress([]); setErr(null);
-    setFileName(""); setVendorId(""); setNewVendor(""); setNames({}); setDecisions({});
+    setFileName(""); setVendorId(""); setNewVendor(""); setNames({}); setDecisions({}); setZeroDec({});
     if (fileRef.current) fileRef.current.value = "";
   }
 
@@ -80,7 +88,7 @@ export default function Home() {
     if (!read) return;
     setBusy(true); setErr(null);
     try {
-      const c = await post<CheckRes>("/api/check", { po: read.po, vendorId: vendorId && vendorId !== NEW ? vendorId : null });
+      const c = await post<CheckRes>("/api/check", { po: { ...read.po, lines: [...read.po.lines, ...read.po.noAmountLines] }, vendorId: vendorId && vendorId !== NEW ? vendorId : null });
       setCheck(c);
       setNames(Object.fromEntries(c.skus.filter((s) => s.status === "new" || s.status === "flag").map((s) => [s.sku, s.proposedName || s.fullName])));
       setDecisions({});
@@ -91,8 +99,8 @@ export default function Home() {
   // ---- Step 4: fill QuickBooks
   async function fill() {
     if (!read || !check) return;
-    const toCreate = check.skus.filter((s) => (s.status === "new" || s.status === "flag") && !(s.nameMatches && decisions[s.sku]?.mode === "pick"));
-    const toRename = check.skus
+    const toCreate = skus.filter((s) => (s.status === "new" || s.status === "flag") && !(s.nameMatches && decisions[s.sku]?.mode === "pick"));
+    const toRename = skus
       .filter((s) => s.nameDiffers && decisions[s.sku]?.mode === "rename")
       .map((s) => ({ itemId: s.itemId!, sku: s.sku, name: (decisions[s.sku].name || "").trim() }));
     const steps: Step[] = [
@@ -122,8 +130,8 @@ export default function Home() {
       }
 
       i = S_NEW; upd(S_NEW, { state: toCreate.length ? "run" : "ok", note: toCreate.length ? undefined : "none needed" });
-      const ids: Record<string, string> = Object.fromEntries(check.skus.filter((s) => s.itemId).map((s) => [normSku(s.sku), s.itemId!]));
-      for (const s of check.skus) // product chosen on screen (duplicate SKU, or same name with another SKU)
+      const ids: Record<string, string> = Object.fromEntries(skus.filter((s) => s.itemId).map((s) => [normSku(s.sku), s.itemId!]));
+      for (const s of skus) // product chosen on screen (duplicate SKU, or same name with another SKU)
         if ((s.choices || s.nameMatches) && decisions[s.sku]?.mode === "pick" && decisions[s.sku].itemId) ids[normSku(s.sku)] = decisions[s.sku].itemId!;
       const failed: string[] = [];
       for (let k = 0; k < toCreate.length; k += 8) {
@@ -136,7 +144,7 @@ export default function Home() {
       if (toCreate.length) upd(S_NEW, { state: "ok" });
 
       i = S_BILL; upd(S_BILL, { state: "run" });
-      const lines = read.po.lines.map((l) => ({ itemId: ids[normSku(l.sku)], qty: l.qty, amount: l.amount }));
+      const lines = activeLines.map((l) => ({ itemId: ids[normSku(l.sku)], qty: l.qty, amount: l.amount }));
       const b = await post<{ id: string; url: string; total: number }>("/api/fill/bill", {
         vendorId: v.vendorId, date: read.po.date, billNo: read.po.billNo, storeId, lines,
       });
@@ -155,14 +163,14 @@ export default function Home() {
   async function logout() { await post("/api/logout", {}); location.href = "/login"; }
 
   const counts = useMemo(() => {
-    const s = check?.skus || [];
+    const s = skus;
     return { exists: s.filter((x) => x.status === "exists").length, new: s.filter((x) => x.status === "new").length, flag: s.filter((x) => x.status === "flag").length, inactive: s.filter((x) => x.status === "inactive") };
-  }, [check]);
+  }, [check, zeroDec, read]);
 
   const po = read?.po;
   const locked = stage === "fill" || stage === "done";
   const vendorName = vendorId === NEW ? newVendor : read?.vendor?.all.find((v) => v.id === vendorId)?.name;
-  const toReview = (check?.skus || []).filter((s) =>
+  const toReview = skus.filter((s) =>
     (s.status === "exists" && (s.nameDiffers || s.choices)) || ((s.status === "new" || s.status === "flag") && s.nameMatches));
   const undecided = toReview.filter((s) => {
     const d = decisions[s.sku];
@@ -176,7 +184,7 @@ export default function Home() {
     for (const s of toReview) if (s.nameDiffers && !n[s.sku]) n[s.sku] = { mode: "keep" };
     return n;
   });
-  const blockFill = undecided.length > 0 || !!check?.duplicateBill || counts.inactive.length > 0 || (check?.skus || []).some((s) =>
+  const blockFill = zeroOpen.length > 0 || undecided.length > 0 || !!check?.duplicateBill || counts.inactive.length > 0 || skus.some((s) =>
     (s.status === "new" || s.status === "flag") && !(s.nameMatches && decisions[s.sku]?.mode === "pick") && !(names[s.sku] || "").trim());
 
   return (
@@ -283,12 +291,43 @@ export default function Home() {
               <div className="tiles">
                 <div><span>Bill no.</span><strong>{po.billNo}</strong></div>
                 <div><span>Date</span><strong>{usDate(po.date)}</strong></div>
-                <div><span>Items</span><strong>{po.lines.length}</strong></div>
+                <div><span>Items</span><strong>{activeLines.length}</strong></div>
                 <div><span>Total</span><strong>{money(po.total)}</strong>{po.invoiceAmount != null && Math.abs(po.invoiceAmount - po.total) < 0.01 && <small className="ok-text">✓ matches file</small>}</div>
               </div>
 
               {check.duplicateBill && <div className="alert">Bill <b>{po.billNo}</b> is already in QuickBooks. It will not be added again.</div>}
               {po.warnings.map((w, i) => <div key={i} className="note">{w}</div>)}
+
+              {zeroLines.length > 0 && (
+                <div className="review">
+                  <div className="review-head">
+                    <b>{zeroOpen.length ? "⚠" : "✓"} {zeroLines.length} product(s) have a quantity but no cost / amount in the file</b>
+                    {stage === "check" && (
+                      <span className="row">
+                        <button className="link" onClick={() => setZeroDec(Object.fromEntries(zeroLines.map((l) => [l.row, "add"])))}>Add all</button>
+                        <button className="link" onClick={() => setZeroDec(Object.fromEntries(zeroLines.map((l) => [l.row, "ignore"])))}>Ignore all</button>
+                      </span>
+                    )}
+                  </div>
+                  <p className="small">Choose for each line: <b>Add</b> puts it on the bill with its quantity and <b>$0.00</b> · <b>Ignore</b> leaves it off the bill.</p>
+                  <table className="mini">
+                    <thead><tr><th>Row</th><th>SKU</th><th>Product</th><th>Qty</th><th></th></tr></thead>
+                    <tbody>{zeroLines.map((l) => (
+                      <tr key={l.row} className={zeroDec[l.row] ? "" : "flag"}>
+                        <td>{l.row}</td><td className="mono">{l.sku}</td><td>{l.fullName}</td><td>{l.qty}</td>
+                        <td className="nowrap">
+                          {stage === "check" ? (
+                            <>
+                              <button className={`chip ${zeroDec[l.row] === "add" ? "on" : ""}`} onClick={() => setZeroDec({ ...zeroDec, [l.row]: "add" })}>Add</button>
+                              <button className={`chip ${zeroDec[l.row] === "ignore" ? "on off" : ""}`} onClick={() => setZeroDec({ ...zeroDec, [l.row]: "ignore" })}>Ignore</button>
+                            </>
+                          ) : zeroDec[l.row] === "add" ? "Added ($0.00)" : "Ignored"}
+                        </td>
+                      </tr>
+                    ))}</tbody>
+                  </table>
+                </div>
+              )}
 
               <h3>SKU check</h3>
               <div className="skusum">
@@ -311,7 +350,7 @@ export default function Home() {
                   <button className="btn" disabled={busy} onClick={runCheck}>{busy ? "Checking…" : "Check again"}</button>
                 </div>
               )}
-              {check.skus.filter((s) => s.status === "exists" && s.existingType && s.existingType !== "Inventory").map((s) => (
+              {skus.filter((s) => s.status === "exists" && s.existingType && s.existingType !== "Inventory").map((s) => (
                 <div key={"t" + s.sku} className="note">SKU <b>{s.sku}</b> matches “{s.existingName}”, which is a <b>{s.existingType}</b> product (not Inventory) in QuickBooks. Please check it.</div>
               ))}
               {toReview.length > 0 && (
@@ -397,13 +436,13 @@ export default function Home() {
                 </div>
               )}
 
-              {check.skus.some((s) => (s.status === "new" || s.status === "flag") && !s.nameMatches) && (
+              {skus.some((s) => (s.status === "new" || s.status === "flag") && !s.nameMatches) && (
                 <>
                   <p className="muted small">These will be created with quantity 0, as-of date <b>{usDate(check.asOf)}</b>, non-taxable.</p>
                   <table>
                     <thead><tr><th>SKU</th><th>Product name in QuickBooks</th></tr></thead>
                     <tbody>
-                      {check.skus.filter((s) => (s.status === "new" || s.status === "flag") && !s.nameMatches).map((s) => (
+                      {skus.filter((s) => (s.status === "new" || s.status === "flag") && !s.nameMatches).map((s) => (
                         <tr key={s.sku} className={s.status === "flag" ? "flag" : ""}>
                           <td className="mono">{s.status === "flag" && "⚠ "}{s.sku}</td>
                           <td>
@@ -420,7 +459,7 @@ export default function Home() {
               )}
               {stage === "check" && (
                 <>
-                  {undecided.length > 0 && <p className="warn-text center">Choose an option for the {undecided.length} product(s) marked ⚠ above to continue.</p>}
+                  {(undecided.length > 0 || zeroOpen.length > 0) && <p className="warn-text center">Choose an option for {undecided.length + zeroOpen.length} item(s) marked ⚠ above to continue.</p>}
                   <button className="btn big" disabled={busy || blockFill} onClick={fill}>Fill data to QuickBooks</button>
                 </>
               )}

@@ -90,3 +90,8 @@ input.rename { margin: 4px 0 2px 24px; width: calc(100% - 24px); }
 .newname input.rename { margin: 0; width: 100%; }
 .chosen { font-size: 13px; color: var(--ok); margin: 8px 0 0; }
 .names.facts { grid-template-columns: 110px 1fr; background: #f7f8fa; border-radius: 6px; padding: 8px 10px; }
+
+.nowrap { white-space: nowrap; }
+.chip { font: inherit; font-size: 13px; padding: 3px 10px; border-radius: 6px; border: 1px solid #cfd5dd; background: #fff; cursor: pointer; margin-right: 4px; }
+.chip.on { background: var(--brand); color: #fff; border-color: var(--brand); }
+.chip.on.off { background: #6b7280; border-color: #6b7280; }
